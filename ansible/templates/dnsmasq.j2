@@ -1,0 +1,17 @@
+# DHCP, TFTP и DNS работают только в сети PXE.
+interface={{ pxe_interface }}
+except-interface=lo
+bind-interfaces
+dhcp-authoritative
+dhcp-range=10.0.0.100,10.0.0.120,255.255.255.0,12h
+dhcp-option=option:router,{{ pxe_ip }}
+dhcp-option=option:dns-server,{{ pxe_ip }}
+log-dhcp
+
+dhcp-match=set:uefi64,option:client-arch,7
+dhcp-match=set:uefi64,option:client-arch,9
+dhcp-boot=tag:uefi64,bootx64.efi,,{{ pxe_ip }}
+dhcp-boot=tag:!uefi64,pxelinux.0,,{{ pxe_ip }}
+
+enable-tftp
+tftp-root={{ tftp_root }}

@@ -1,0 +1,10 @@
+#!/usr/sbin/nft -f
+# Конфигурация выделенной лабораторной ВМ.
+flush ruleset
+
+table ip pxe_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr {{ pxe_subnet }} oifname "{{ ansible_facts.default_ipv4.interface }}" masquerade
+    }
+}

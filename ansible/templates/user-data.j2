@@ -1,0 +1,23 @@
+#cloud-config
+autoinstall:
+  version: 1
+  refresh-installer:
+    update: false
+  identity:
+    hostname: pxeclient
+    username: otus
+    password: "{{ password_hash }}"
+  apt:
+    geoip: false
+    mirror-selection:
+      primary:
+        - uri: http://archive.ubuntu.com/ubuntu
+          arches: [amd64]
+    fallback: abort
+  storage:
+    layout:
+      name: direct
+  ssh:
+    install-server: false
+  updates: security
+  shutdown: poweroff

@@ -1,0 +1,6 @@
+DEFAULT install
+PROMPT 0
+LABEL install
+    KERNEL linux
+    INITRD initrd
+    APPEND {{ boot_args }} {{ seed_arg }} ---

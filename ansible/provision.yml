@@ -1,0 +1,157 @@
+---
+- name: Настроить PXE-сервер
+  hosts: pxeserver
+  become: true
+  vars:
+    pxe_ip: 10.0.0.20
+    pxe_subnet: 10.0.0.0/24
+    pxe_release: '24.04.5'
+    release_url: "https://releases.ubuntu.com/{{ pxe_release }}"
+    iso_name: "ubuntu-{{ pxe_release }}-live-server-amd64.iso"
+    tftp_root: /srv/tftp
+    http_root: /var/www/html/pxe
+    password_hash: "{{ lookup('ansible.builtin.env', 'PXE_PASSWORD_HASH') }}"
+    boot_args: >-
+      root=/dev/ram0 ramdisk_size=4500000 ip=dhcp
+      iso-url=http://{{ pxe_ip }}/pxe/{{ iso_name }}
+      autoinstall
+    seed_arg: "ds=nocloud-net;s=http://{{ pxe_ip }}/pxe/seed/"
+  tasks:
+    - name: Проверить наличие SHA-512 crypt хеша из среды хоста
+      ansible.builtin.assert:
+        that: password_hash is match('^\$6\$[^$]+\$[./0-9A-Za-z]{86}$')
+        fail_msg: Задайте PXE_PASSWORD_HASH через openssl passwd -6 на хосте.
+      no_log: true
+
+    - name: Определить интерфейс PXE по адресу ВМ
+      ansible.builtin.set_fact:
+        pxe_interface: "{{ item }}"
+      loop: "{{ ansible_facts.interfaces }}"
+      when: (ansible_facts[item].ipv4 | default({})).address | default('') == pxe_ip
+
+    - name: Проверить сетевую топологию
+      ansible.builtin.assert:
+        that:
+          - pxe_interface is defined
+          - ansible_facts.default_ipv4.interface is defined
+          - pxe_interface != ansible_facts.default_ipv4.interface
+
+    - name: Установить DHCP, TFTP, HTTP и NAT
+      ansible.builtin.apt:
+        name: [dnsmasq, apache2, nftables, curl, tcpdump]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Создать каталоги загрузки
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - "{{ tftp_root }}"
+        - "{{ tftp_root }}/pxelinux.cfg"
+        - "{{ tftp_root }}/grub"
+        - "{{ http_root }}"
+        - "{{ http_root }}/seed"
+
+    - name: Скачать загрузчики, ядро и initrd одного выпуска
+      ansible.builtin.get_url:
+        url: "{{ release_url }}/netboot/amd64/{{ item }}"
+        dest: "{{ tftp_root }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+        timeout: 180
+      loop: [pxelinux.0, ldlinux.c32, bootx64.efi, grubx64.efi, linux, initrd]
+
+    - name: Скачать ISO и сверить контрольную сумму Ubuntu
+      ansible.builtin.get_url:
+        url: "{{ release_url }}/{{ iso_name }}"
+        dest: "{{ http_root }}/{{ iso_name }}"
+        checksum: "sha256:97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8"
+        owner: root
+        group: root
+        mode: '0644'
+        timeout: 1800
+
+    - name: Настроить PXELINUX и GRUB
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - {src: pxelinux.j2, dest: "{{ tftp_root }}/pxelinux.cfg/default"}
+        - {src: grub.j2, dest: "{{ tftp_root }}/grub/grub.cfg"}
+
+    - name: Подготовить user-data для NoCloud
+      ansible.builtin.template:
+        src: user-data.j2
+        dest: "{{ http_root }}/seed/user-data"
+        owner: root
+        group: www-data
+        mode: '0640'
+      no_log: true
+
+    - name: Подготовить метаданные NoCloud
+      ansible.builtin.copy:
+        content: |
+          instance-id: pxe-ubuntu-noble
+          local-hostname: pxeclient
+        dest: "{{ http_root }}/seed/meta-data"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Включить маршрутизацию клиента к HTTP-зеркалу Ubuntu
+      ansible.builtin.copy:
+        content: "net.ipv4.ip_forward = 1\n"
+        dest: /etc/sysctl.d/90-pxe-forward.conf
+        mode: '0644'
+      register: forwarding
+
+    - name: Применить настройку пересылки пакетов
+      ansible.builtin.command: sysctl -p /etc/sysctl.d/90-pxe-forward.conf
+      changed_when: forwarding.changed
+
+    - name: Настроить NAT на выделенном сервере PXE
+      ansible.builtin.template:
+        src: nftables.j2
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: nft -c -f %s
+      notify: Перезапустить nftables
+
+    - name: Настроить DHCP и TFTP в изолированной сети
+      ansible.builtin.template:
+        src: dnsmasq.j2
+        dest: /etc/dnsmasq.d/pxe.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: dnsmasq --test --conf-file=%s
+      notify: Перезапустить dnsmasq
+
+    - name: Включить службы
+      ansible.builtin.service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [nftables, apache2, dnsmasq]
+
+  handlers:
+    - name: Перезапустить nftables
+      ansible.builtin.service:
+        name: nftables
+        state: restarted
+
+    - name: Перезапустить dnsmasq
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted

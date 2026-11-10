@@ -1,0 +1,7 @@
+set default=0
+set timeout=3
+
+menuentry 'Ubuntu Server 24.04 autoinstall' {
+    linux /linux {{ boot_args }} '{{ seed_arg }}' ---
+    initrd /initrd
+}
